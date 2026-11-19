@@ -88,8 +88,11 @@ let data=[],S={culture:"",type:"",etape:""},cur=null;
 try{data=JSON.parse(localStorage.getItem(KEY))||[]}catch(e){data=[]}
 data.forEach(c=>{
   if(!c.v){c.etape=Math.min((+c.etape||0)+1,5);c.v=2}
-  c.journal=(c.journal||[]).map(j=>({d:j.d,type:j.type||"Autre",t:j.t||"",q:j.q||null,pu:j.pu||null,total:j.total||null,prod:j.prod||"",qp:j.qp||null,unit:j.unit||"",cout:j.cout||null}));
+  c.journal=(c.journal||[]).map(j=>({d:j.d,type:j.type||"Autre",t:j.t||"",q:j.q||null,pu:j.pu||null,total:j.total||null,num:j.num||null,prod:j.prod||"",qp:j.qp||null,unit:j.unit||"",cout:j.cout||null}));
   if(c.rendement!=null){c.journal.push({d:c.semis,type:"Récolte",t:"Récolte (ancienne saisie)",q:c.rendement,pu:null,total:null,prod:"",qp:null,unit:"",cout:null});delete c.rendement}
+  const hs=c.journal.filter(j=>j.type==="Récolte");
+  let n=Math.max(0,...hs.map(j=>+j.num||0));
+  hs.filter(j=>!j.num).sort((a,b)=>a.d.localeCompare(b.d)).forEach(j=>{j.num=++n});
 });
 const save=()=>{try{localStorage.setItem(KEY,JSON.stringify(data))}catch(e){alert("Sauvegarde impossible dans ce navigateur. Utilisez la sauvegarde JSON.")}};
 const $=s=>document.querySelector(s);
@@ -102,7 +105,7 @@ const sum=c=>{const J=c.journal;return{
   rec:J.filter(j=>j.type==="Récolte").reduce((s,j)=>s+(+j.q||0),0),
   recette:J.reduce((s,j)=>s+(+j.total||0),0),
   cout:J.reduce((s,j)=>s+(+j.cout||0),0)}};
-const det=j=>[j.prod&&`Produit : ${j.prod}${j.qp?` · ${nb(j.qp)} ${j.unit}`:""}`,j.t].filter(Boolean).join(" · ");
+const det=j=>[j.num&&`Récolte n° ${j.num}`,j.prod&&`Produit : ${j.prod}${j.qp?` · ${nb(j.qp)} ${j.unit}`:""}`,j.t].filter(Boolean).join(" · ");
 const sel=(attr,val,opts,all)=>`<select data-flt="${attr}" aria-label="${all}"><option value="">${all}</option>${opts.map(o=>`<option ${o===val?"selected":""}>${esc(o)}</option>`).join("")}</select>`;
 
 function table(name,cols,rows,foot,num=[]){
@@ -122,12 +125,17 @@ function applyType(box){
   box.querySelectorAll(".rf").forEach(x=>x.classList.toggle("hid",!r));
   box.querySelectorAll(".pf").forEach(x=>x.classList.toggle("hid",!pr));
   box.querySelector(".cf").classList.toggle("hid",r);
+  if(r){const n=box.querySelector('[data-f="num"]');
+    if(!n.dataset.touched){
+      const cid=box.dataset.cid||box.querySelector('[data-f="cid"]').value,c=data.find(x=>x.id==cid);
+      n.value=c?Math.max(0,...c.journal.filter(j=>j.type==="Récolte").map(j=>+j.num||0))+1:1}}
 }
 function actForm(types,cid){
   return `<div class="grid act"${cid?` data-cid="${cid}"`:""}>
     ${cid?"":`<label>Culture<select data-f="cid">${data.map(c=>`<option value="${c.id}">${esc(c.nom)}</option>`).join("")}</select></label>`}
     <label>Date<input type="date" data-f="d" value="${today()}"></label>
     <label>Activité<select data-f="type">${types.map(t=>`<option>${t}</option>`).join("")}</select></label>
+    <label class="rf hid">N° de la récolte<input type="number" min="1" step="1" data-f="num"></label>
     <label class="rf hid">Quantité (kg)<input type="number" min="0" step="any" data-f="q"></label>
     <label class="rf hid">Prix unitaire (FCFA/kg)<input type="number" min="0" step="any" data-f="pu"></label>
     <label class="rf hid">Prix total (FCFA)<input type="number" min="0" step="any" data-f="total"></label>
@@ -159,12 +167,12 @@ journal(){
     r.map(({c,j})=>[fr(j.d),c.nom,j.type,det(j),j.q?nb(j.q):"",j.type==="Récolte"?(j.total?nb(j.total):""):(j.cout?"− "+nb(j.cout):"")]),null,[4,5]);
 },
 recoltes(){
-  const r=allActs().filter(x=>x.j.type==="Récolte");
+  const r=allActs().filter(x=>x.j.type==="Récolte").sort((a,b)=>a.c.nom.localeCompare(b.c.nom)||(a.j.num||0)-(b.j.num||0));
   const q=r.reduce((s,x)=>s+(+x.j.q||0),0),t=r.reduce((s,x)=>s+(+x.j.total||0),0);
-  return head("Récoltes et ventes","Date, quantité, prix unitaire et prix total de chaque récolte.")+formBox("Enregistrer une récolte",["Récolte"])+tools(false)+
-   table("recoltes",["Date","Culture","Quantité (kg)","Prix unitaire (FCFA/kg)","Prix total (FCFA)","Détails"],
-    r.map(({c,j})=>[fr(j.d),c.nom,nb(j.q),j.pu?nb(j.pu):"",j.total?nb(j.total):"",j.t]),
-    ["Total","",nb(q),q&&t?nb(t/q):"",nb(t),""],[2,3,4]);
+  return head("Récoltes et ventes","Chaque récolte porte un numéro : le prix unitaire et le prix total sont propres à chaque récolte.")+formBox("Enregistrer une récolte",["Récolte"])+tools(false)+
+   table("recoltes",["Culture","N° récolte","Date","Quantité (kg)","Prix unitaire (FCFA/kg)","Prix total (FCFA)","Détails"],
+    r.map(({c,j})=>[c.nom,j.num?"N° "+j.num:"",fr(j.d),nb(j.q),j.pu?nb(j.pu):"",j.total?nb(j.total):"",j.t]),
+    ["Total","","",nb(q),q&&t?nb(t/q)+" (moyen)":"",nb(t),""],[3,4,5]);
 },
 intrants(){
   const r=allActs().filter(x=>x.j.type==="Fertilisation"||x.j.type==="Traitement");
@@ -248,12 +256,14 @@ document.addEventListener("click",e=>{
     if(!c){alert("Choisissez une culture.");return}
     const g=k=>box.querySelector(`[data-f="${k}"]`).value.trim();
     const type=g("type"),t=g("t"),d=g("d")||today();
-    const base={d,type,t,q:null,pu:null,total:null,prod:"",qp:null,unit:"",cout:null};
+    const base={d,type,t,q:null,pu:null,total:null,num:null,prod:"",qp:null,unit:"",cout:null};
     if(type==="Récolte"){
-      const q=+g("q"),pu=+g("pu"),tot=+g("total");
+      const q=+g("q"),pu=+g("pu"),tot=+g("total"),num=Math.floor(+g("num"));
+      if(!(num>0)){alert("Indiquez le numéro de la récolte.");return}
       if(!(q>0)){alert("Indiquez la quantité récoltée.");return}
+      if(c.journal.some(j=>j.type==="Récolte"&&+j.num===num)&&!confirm(`La récolte n° ${num} existe déjà pour cette culture. Enregistrer quand même ?`))return;
       const total=tot>0?tot:(pu>0?q*pu:null);
-      Object.assign(base,{q,total,pu:pu>0?pu:(total?total/q:null)});
+      Object.assign(base,{q,num,total,pu:pu>0?pu:(total?total/q:null)});
     }else{
       const pt=type==="Fertilisation"||type==="Traitement",cout=g("cout");
       if(pt&&!g("prod")){alert("Indiquez le produit utilisé.");return}
@@ -279,10 +289,10 @@ document.addEventListener("click",e=>{
 document.addEventListener("change",e=>{
   const t=e.target;
   if(t.dataset.flt){S[t.dataset.flt]=t.value;render();return}
-  if(t.dataset.f==="type")applyType(t.closest(".act"));
+  if(t.dataset.f==="type"||t.dataset.f==="cid"){const bx=t.closest(".act");if(t.dataset.f==="cid")bx.querySelector('[data-f="num"]').dataset.touched="";applyType(bx)}
 });
 document.addEventListener("input",e=>{
-  const f=e.target.dataset.f;if(!["q","pu","total"].includes(f))return;
+  const f=e.target.dataset.f;if(f==="num")e.target.dataset.touched="1";if(!["q","pu","total"].includes(f))return;
   const box=e.target.closest(".act"),g=k=>box.querySelector(`[data-f="${k}"]`);
   const q=+g("q").value,pu=+g("pu").value,t=+g("total").value;
   if(f==="total"){if(q>0)g("pu").value=t>0?+(t/q).toFixed(2):""}
