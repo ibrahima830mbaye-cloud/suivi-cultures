@@ -91,7 +91,7 @@ summary{cursor:pointer;font:600 .92rem system-ui,sans-serif}
 <script type="module">
 import {initializeApp,deleteApp} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
 import {getAuth,onAuthStateChanged,signInWithEmailAndPassword,signOut,createUserWithEmailAndPassword,sendPasswordResetEmail} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
-import {getFirestore,collection,doc,onSnapshot,addDoc,setDoc,updateDoc,deleteDoc,writeBatch} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+import {getFirestore,collection,doc,onSnapshot,addDoc,setDoc,updateDoc,deleteDoc,writeBatch,query,where,increment} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
 
 /* ====== À REMPLIR : Firebase > Paramètres du projet > Vos applications > Configuration ====== */
 const FIREBASE={apiKey:"AIzaSyBvqyi5iNCBoSOegd4RCumzVOtgFSVu0rA",authDomain:"suivi-cultures-e01e5.firebaseapp.com",projectId:"suivi-cultures-e01e5",appId:"1:665920260451:web:93dce6e645e1f1427c2b56"};
@@ -100,16 +100,22 @@ const FIREBASE={apiKey:"AIzaSyBvqyi5iNCBoSOegd4RCumzVOtgFSVu0rA",authDomain:"sui
 const configured=!String(FIREBASE.apiKey).startsWith("COLLEZ");
 const ETAPES=["Préparation du sol","Semis","Levée","Croissance","Floraison","Récolte"];
 const TYPES=["Préparation du sol","Semis","Levée","Croissance","Floraison","Récolte","Repiquage","Arrosage","Fertilisation","Désherbage","Traitement","Taille / entretien","Autre"];
-const ROLES=[["admin","Administrateur"],["editeur","Éditeur (saisie)"],["lecteur","Lecteur (consultation)"],["aucun","Désactivé"]];
+const ROLES=[["admin","Administrateur"],["editeur","Éditeur (saisie)"],["lecteur","Lecteur (consultation)"],["client","Client (commande seulement)"],["aucun","Désactivé"]];
 const roleLabel=r=>(ROLES.find(x=>x[0]===r)||[0,"En attente"])[1];
 const KEY="suivi-cultures-v1";
 
 let app,auth,db,me=null,role="aucun",ready=false,pending=false;
-let cultures=[],acts=[],users=[],data=[],unsubs=[],unsubProfile=null;
+let cultures=[],acts=[],users=[],data=[],produits=[],commandes=[],myNom="",unsubs=[],unsubProfile=null;
 let S={culture:"",type:"",etape:""},cur=null;
 const canEdit=()=>role==="editeur"||role==="admin";
 const isAdmin=()=>role==="admin";
-const hasAccess=()=>role==="lecteur"||role==="editeur"||role==="admin";
+const canSee=()=>role==="lecteur"||role==="editeur"||role==="admin";
+const isClient=()=>role==="client";
+const hasAccess=()=>canSee()||isClient();
+const STAT={en_attente:"En attente",confirmee:"Confirmée",livree:"Livrée",annulee:"Annulée"};
+const hasStock=p=>p.stock!==""&&p.stock!=null&&!isNaN(+p.stock);
+const detCmd=c=>(c.lignes||[]).map(l=>`${nb(l.qte)} ${l.unite} ${l.nom}`).join(", ");
+const consomme=st=>st==="confirmee"||st==="livree";
 
 const $=s=>document.querySelector(s);
 const today=()=>new Date().toISOString().slice(0,10);
@@ -131,18 +137,37 @@ function rebuild(){
 }
 function refresh(){
   const ae=document.activeElement;
-  if(ae&&["INPUT","SELECT"].includes(ae.tagName)&&ae.closest(".act,#f,#fu,#fl")){pending=true;return}
+  if(ae&&["INPUT","SELECT"].includes(ae.tagName)&&ae.closest(".act,#f,#fu,#fl,#fo,#fp")){pending=true;return}
   render();
 }
 document.addEventListener("focusout",()=>{if(pending)setTimeout(()=>{if(pending)refresh()},250)});
-function stopData(){unsubs.forEach(u=>u());unsubs=[];cultures=[];acts=[];users=[];data=[]}
+function stopData(){unsubs.forEach(u=>u());unsubs=[];cultures=[];acts=[];users=[];data=[];produits=[];commandes=[]}
 function startData(){
   stopData();
   if(!hasAccess())return;
   const err=e=>console.error(e);
-  unsubs.push(onSnapshot(collection(db,"cultures"),s=>{cultures=s.docs.map(d=>({id:d.id,...d.data()}));rebuild();refresh()},err));
-  unsubs.push(onSnapshot(collection(db,"activites"),s=>{acts=s.docs.map(d=>({id:d.id,...d.data()}));rebuild();refresh()},err));
+  unsubs.push(onSnapshot(collection(db,"produits"),s=>{produits=s.docs.map(d=>({id:d.id,...d.data()}));refresh()},err));
+  const cq=canEdit()?collection(db,"commandes"):query(collection(db,"commandes"),where("uid","==",me.uid));
+  unsubs.push(onSnapshot(cq,s=>{commandes=s.docs.map(d=>({id:d.id,...d.data()}));refresh()},err));
+  if(canSee()){
+    unsubs.push(onSnapshot(collection(db,"cultures"),s=>{cultures=s.docs.map(d=>({id:d.id,...d.data()}));rebuild();refresh()},err));
+    unsubs.push(onSnapshot(collection(db,"activites"),s=>{acts=s.docs.map(d=>({id:d.id,...d.data()}));rebuild();refresh()},err));
+  }
   if(isAdmin())unsubs.push(onSnapshot(collection(db,"users"),s=>{users=s.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>String(a.email).localeCompare(String(b.email)));refresh()},err));
+}
+async function setStatut(o,st){
+  const prev=o.statut;if(prev===st)return;
+  const dec=!consomme(prev)&&consomme(st),inc=consomme(prev)&&!consomme(st);
+  if(dec){
+    const bad=(o.lignes||[]).find(l=>{const p=produits.find(x=>x.id===l.produitId);return p&&hasStock(p)&&+p.stock<l.qte});
+    if(bad&&!confirm(`Stock insuffisant pour ${bad.nom}. Confirmer quand même ?`))return;
+  }
+  await run(async()=>{
+    const bt=writeBatch(db);
+    bt.update(doc(db,"commandes",o.id),{statut:st});
+    if(dec||inc)(o.lignes||[]).forEach(l=>{const p=produits.find(x=>x.id===l.produitId);if(p&&hasStock(p))bt.update(doc(db,"produits",p.id),{stock:increment(dec?-l.qte:l.qte)})});
+    await bt.commit();
+  });
 }
 function norm(c){
   if(!c.v){c.etape=Math.min((+c.etape||0)+1,5);c.v=2}
@@ -212,7 +237,7 @@ const formBox=(title,types)=>!canEdit()?roBanner():data.length?`<section class="
 const VIEWS={
 tableau(){
   const T=data.reduce((a,c)=>{const s=sum(c);a.k+=s.rec;a.r+=s.recette;a.d+=s.cout;return a},{k:0,r:0,d:0});
-  const k=[["Cultures suivies",data.length],["En récolte",data.filter(c=>c.etape===5).length],["Total récolté",nb(T.k)+" kg"],["Recettes",nb(T.r)+" FCFA"],["Dépenses",nb(T.d)+" FCFA"],["Bénéfice",nb(T.r-T.d)+" FCFA"]];
+  const k=[["Cultures suivies",data.length],["En récolte",data.filter(c=>c.etape===5).length],["Total récolté",nb(T.k)+" kg"],["Recettes",nb(T.r)+" FCFA"],["Dépenses",nb(T.d)+" FCFA"],["Bénéfice",nb(T.r-T.d)+" FCFA"],...(canEdit()?[["Commandes en attente",commandes.filter(c=>c.statut==="en_attente").length]]:[])];
   return head("Tableau de bord","Vue d'ensemble de toutes vos cultures.")+roBanner()+
    `<div class="kpis">${k.map(x=>`<div class="kpi"><b>${x[1]}</b><span>${x[0]}</span></div>`).join("")}</div>`+
    `<div class="bar"><button class="alt" data-go="csv">Exporter en CSV (Excel)</button><button class="alt" data-go="print">Imprimer</button></div>`+
@@ -258,13 +283,44 @@ cultures(){
    `<div class="bar">${sel("etape",S.etape,ETAPES,"Toutes les étapes")}</div>`+
    (liste.length?liste.map(card).join(""):'<p class="empty">Aucune culture ici.</p>');
 },
+commander(){
+  const ps=produits.filter(p=>p.actif!==false).sort((a,b)=>String(a.nom).localeCompare(String(b.nom)));
+  return head("Commander","Choisissez les produits et les quantités, puis envoyez votre commande.")+(ps.length?
+  `<form id="fo"><div class="tw"><table><thead><tr><th>Produit</th><th class="n">Prix</th><th class="n">Disponible</th><th class="n">Quantité</th></tr></thead><tbody>${ps.map(p=>`<tr><td>${esc(p.nom)}</td><td class="n">${nb(p.prix)} FCFA / ${esc(p.unite)}</td><td class="n">${hasStock(p)?nb(p.stock)+" "+esc(p.unite):"—"}</td><td class="n"><input type="number" min="0" step="any" data-qty="${esc(p.id)}" style="width:110px" aria-label="Quantité de ${esc(p.nom)}"></td></tr>`).join("")}</tbody></table></div>
+   <div class="grid" style="margin-top:14px"><label style="grid-column:1/-1">Lieu, date de livraison souhaitée, remarques<input name="note" placeholder="Ex. : livraison à Thiès le samedi"></label><div><span class="meta">Total estimé</span><br><b id="ctot" style="font-size:1.3rem">0 FCFA</b></div><button>Envoyer la commande</button></div></form>`
+  :'<p class="empty">Aucun produit n\'est disponible pour le moment.</p>');
+},
+mescommandes(){
+  const r=commandes.filter(c=>c.uid===me.uid).sort((a,b)=>(b.created||0)-(a.created||0));
+  return head("Mes commandes","Suivez l'état de vos commandes.")+`<div class="tw"><table><thead><tr><th>Date</th><th>Détail</th><th class="n">Total (FCFA)</th><th>Statut</th><th></th></tr></thead><tbody>${
+   r.map(c=>`<tr><td>${fr(c.date)}</td><td>${esc(detCmd(c))}${c.note?`<br><span class="meta">${esc(c.note)}</span>`:""}</td><td class="n">${nb(c.total)}</td><td>${esc(STAT[c.statut]||c.statut)}</td><td>${c.statut==="en_attente"?`<button class="alt" data-act="cancelc" data-oid="${esc(c.id)}">Annuler</button>`:""}</td></tr>`).join("")||'<tr><td colspan="5" class="empty">Aucune commande pour le moment.</td></tr>'
+  }</tbody></table></div>`;
+},
+produits(){
+  const UN=["kg","sac","pièce","botte","litre","tas"];
+  return head("Produits","Le catalogue proposé aux clients : prix, unité et quantité disponible.")+
+  `<form id="fp" class="noprint"><div class="grid"><label>Produit<input name="nom" required placeholder="Ex. : Oignon"></label><label>Unité<select name="unite">${UN.map(u=>`<option>${u}</option>`).join("")}</select></label><label>Prix par unité (FCFA)<input name="prix" type="number" min="0" step="any" required></label><label>Quantité disponible (facultatif)<input name="stock" type="number" min="0" step="any"></label><button>Ajouter au catalogue</button></div></form>`+
+  `<div class="tw"><table><thead><tr><th>Produit</th><th>Unité</th><th>Prix (FCFA)</th><th>Disponible</th><th>Visible</th><th></th></tr></thead><tbody>${
+   produits.map(p=>`<tr><td>${esc(p.nom)}</td><td>${esc(p.unite)}</td><td><input type="number" min="0" step="any" value="${esc(p.prix)}" data-pf="prix" data-pid="${esc(p.id)}" style="width:110px" aria-label="Prix de ${esc(p.nom)}"></td><td><input type="number" min="0" step="any" value="${hasStock(p)?esc(p.stock):""}" data-pf="stock" data-pid="${esc(p.id)}" style="width:110px" placeholder="illimité" aria-label="Stock de ${esc(p.nom)}"></td><td><input type="checkbox" ${p.actif!==false?"checked":""} data-pf="actif" data-pid="${esc(p.id)}" style="width:auto" aria-label="Visible pour les clients"></td><td><button class="x" data-act="delp" data-pid="${esc(p.id)}">Supprimer</button></td></tr>`).join("")||'<tr><td colspan="6" class="empty">Aucun produit. Ajoutez-en avec le formulaire ci-dessus.</td></tr>'
+  }</tbody></table></div>`;
+},
+commandes(){
+  const f=S.statut||"";
+  const r=commandes.filter(c=>!f||c.statut===f).sort((a,b)=>(b.created||0)-(a.created||0));
+  const opts=cur=>Object.entries(STAT).map(([k,l])=>`<option value="${k}" ${k===cur?"selected":""}>${l}</option>`).join("");
+  return head("Commandes reçues","Changez le statut de chaque commande. La confirmation retire les quantités du stock ; l'annulation les remet.")+
+  `<div class="bar"><select data-flt="statut" aria-label="Filtrer par statut"><option value="">Tous les statuts</option>${opts(f)}</select><button class="alt" data-go="print">Imprimer</button></div>`+
+  `<div class="tw"><table><thead><tr><th>Date</th><th>Client</th><th>Détail</th><th class="n">Total (FCFA)</th><th>Statut</th></tr></thead><tbody>${
+   r.map(c=>`<tr><td>${fr(c.date)}</td><td>${esc(c.nom||c.email)}<br><span class="meta">${esc(c.email)}</span></td><td>${esc(detCmd(c))}${c.note?`<br><span class="meta">${esc(c.note)}</span>`:""}</td><td class="n">${nb(c.total)}</td><td><select data-ostat="${esc(c.id)}" aria-label="Statut de la commande">${opts(c.statut)}</select></td></tr>`).join("")||'<tr><td colspan="5" class="empty">Aucune commande.</td></tr>'
+  }</tbody></table></div>`;
+},
 utilisateurs(){
   return head("Utilisateurs","Créez des comptes et choisissez ce que chacun peut faire.")+
   `<form id="fu" class="noprint"><div class="grid">
     <label>Nom<input name="nom" required></label>
     <label>Adresse e-mail<input name="email" type="email" required></label>
     <label>Mot de passe (6 caractères min.)<input name="password" type="text" minlength="6" required></label>
-    <label>Rôle<select name="role"><option value="editeur">Éditeur (peut saisir)</option><option value="lecteur">Lecteur (consultation seule)</option><option value="admin">Administrateur</option></select></label>
+    <label>Rôle<select name="role"><option value="editeur">Éditeur (peut saisir)</option><option value="lecteur">Lecteur (consultation seule)</option><option value="client">Client (peut seulement commander)</option><option value="admin">Administrateur</option></select></label>
     <button>Créer l'utilisateur</button></div></form>
    <div class="tw"><table><thead><tr><th>Nom</th><th>E-mail</th><th>Rôle</th></tr></thead><tbody>${
     users.map(u=>`<tr><td>${esc(u.nom)}</td><td>${esc(u.email)}</td><td><select data-urole="${esc(u.id)}" ${u.id===me.uid?"disabled":""} aria-label="Rôle de ${esc(u.email)}">${ROLES.map(([k,l])=>`<option value="${k}" ${k===u.role?"selected":""}>${l}</option>`).join("")}</select></td></tr>`).join("")||'<tr><td colspan="3" class="empty">Aucun utilisateur.</td></tr>'
@@ -300,7 +356,7 @@ const loginHTML=()=>`<div class="login box"><h2>Connexion</h2><form id="fl" styl
 function side(){
   $("#who").innerHTML=me?`${esc(me.email)}<br>${esc(roleLabel(hasAccess()?role:"aucun"))}`:"";
   $("#out").hidden=!me;
-  $("#exp").hidden=!hasAccess();
+  $("#exp").hidden=!canSee();
   $("#imp").hidden=!canEdit();
 }
 function render(){
@@ -310,8 +366,8 @@ function render(){
   if(!ready){$("#nav").innerHTML="";$("#view").innerHTML='<p class="empty">Chargement…</p>';return}
   if(!me){$("#nav").innerHTML="";$("#view").innerHTML=loginHTML();return}
   if(!hasAccess()){$("#nav").innerHTML="";$("#view").innerHTML=`<div class="login box"><h2>Compte en attente</h2><p>Votre compte (${esc(me.email)}) n'a pas encore reçu d'accès. Demandez à l'administrateur de vous attribuer un rôle.</p></div>`;return}
-  const nav=isAdmin()?[...NAV,["utilisateurs","Utilisateurs"]]:NAV;
-  const h=(location.hash||"#tableau").slice(1),name=nav.some(n=>n[0]===h)?h:"tableau";
+  const nav=[...(isClient()?[]:NAV),["commander","Commander"],["mescommandes","Mes commandes"],...(canEdit()?[["produits","Produits"],["commandes","Commandes reçues"]]:[]),...(isAdmin()?[["utilisateurs","Utilisateurs"]]:[])];
+  const h=(location.hash||"").slice(1),name=nav.some(n=>n[0]===h)?h:nav[0][0];
   $("#nav").innerHTML=nav.map(([k,l])=>`<a href="#${k}" class="${k===name?"on":""}">${l}</a>`).join("");
   const keep={};
   document.querySelectorAll("details[open]").forEach(dt=>{keep[dt.closest(".crop").dataset.id]=dt.querySelector('[data-f="type"]').value});
@@ -326,12 +382,24 @@ window.addEventListener("hashchange",render);
 
 /* ---------- actions ---------- */
 document.addEventListener("submit",async e=>{
-  const id=e.target.id;if(!["f","fu","fl"].includes(id))return;
+  const id=e.target.id;if(!["f","fu","fl","fo","fp"].includes(id))return;
   e.preventDefault();
   const v=Object.fromEntries(new FormData(e.target));
   if(id==="fl"){
     try{await signInWithEmailAndPassword(auth,v.email.trim(),v.password);location.hash="#tableau"}
     catch(x){alert("Adresse e-mail ou mot de passe incorrect.")}
+  }else if(id==="fo"){
+    const lignes=[...document.querySelectorAll("[data-qty]")].map(i=>({p:produits.find(x=>x.id===i.dataset.qty),q:+i.value})).filter(x=>x.q>0&&x.p);
+    if(!lignes.length){alert("Indiquez au moins une quantité.");return}
+    const bad=lignes.find(x=>hasStock(x.p)&&x.q>+x.p.stock);
+    if(bad){alert(`La quantité demandée dépasse le stock disponible pour ${bad.p.nom} (${nb(bad.p.stock)} ${bad.p.unite}).`);return}
+    const total=lignes.reduce((t,x)=>t+x.q*(+x.p.prix||0),0);
+    const ok=await run(()=>addDoc(collection(db,"commandes"),{uid:me.uid,email:me.email,nom:myNom,date:today(),
+      lignes:lignes.map(x=>({produitId:x.p.id,nom:x.p.nom,unite:x.p.unite,prix:+x.p.prix||0,qte:x.q})),total,statut:"en_attente",note:(v.note||"").trim(),created:Date.now()}));
+    if(ok){alert("Commande envoyée. Elle sera confirmée par l'exploitation.");location.hash="#mescommandes";render()}
+  }else if(id==="fp"&&canEdit()){
+    const ok=await run(()=>addDoc(collection(db,"produits"),{nom:v.nom.trim(),unite:v.unite,prix:+v.prix||0,stock:v.stock===""?"":+v.stock,actif:true,created:Date.now()}));
+    if(ok)render();
   }else if(id==="f"&&canEdit()){
     const ok=await run(async()=>{
       const ref=await addDoc(collection(db,"cultures"),{nom:v.nom.trim(),parcelle:v.parcelle.trim(),semis:v.semis,prevue:v.prevue||"",surface:v.surface||"",etape:+v.etape,v:2,created:Date.now()});
@@ -371,6 +439,14 @@ document.addEventListener("click",async e=>{
   if(b.dataset.go==="importlocal"){
     const d=localData();if(!d||!confirm(`Importer ${d.length} culture(s) dans la base partagée ?`))return;
     if(await run(async()=>{await importAll(d)})){localStorage.removeItem(KEY);alert("Import terminé.");render()}return;
+  }
+  if(b.dataset.act==="cancelc"){
+    if(!confirm("Annuler cette commande ?"))return;
+    await run(()=>updateDoc(doc(db,"commandes",b.dataset.oid),{statut:"annulee"}));return;
+  }
+  if(b.dataset.act==="delp"&&canEdit()){
+    if(!confirm("Supprimer ce produit du catalogue ?"))return;
+    await run(()=>deleteDoc(doc(db,"produits",b.dataset.pid)));return;
   }
   const a=b.dataset.act;if(!a||!canEdit())return;
   const el=b.closest(".crop");
@@ -427,12 +503,27 @@ document.addEventListener("click",async e=>{
 document.addEventListener("change",async e=>{
   const t=e.target;
   if(t.dataset.flt){S[t.dataset.flt]=t.value;render();return}
+  if(t.dataset.pf&&canEdit()){
+    const f=t.dataset.pf;
+    const val=f==="actif"?t.checked:f==="prix"?(+t.value||0):(t.value===""?"":+t.value);
+    await run(()=>updateDoc(doc(db,"produits",t.dataset.pid),{[f]:val}));return;
+  }
+  if(t.dataset.ostat&&canEdit()){
+    const o=commandes.find(x=>x.id===t.dataset.ostat);
+    if(o)await setStatut(o,t.value);
+    render();return;
+  }
   if(t.dataset.urole&&isAdmin()){
     await run(()=>updateDoc(doc(db,"users",t.dataset.urole),{role:t.value}));return;
   }
   if(t.dataset.f==="type"||t.dataset.f==="cid"){const bx=t.closest(".act");if(t.dataset.f==="cid")bx.querySelector('[data-f="num"]').dataset.touched="";applyType(bx)}
 });
 document.addEventListener("input",e=>{
+  if(e.target.dataset.qty!==undefined){
+    let t=0;
+    document.querySelectorAll("[data-qty]").forEach(i=>{const p=produits.find(x=>x.id===i.dataset.qty);if(p)t+=(+i.value||0)*(+p.prix||0)});
+    const el=$("#ctot");if(el)el.textContent=nb(t)+" FCFA";return;
+  }
   const f=e.target.dataset.f;if(f==="num")e.target.dataset.touched="1";if(!["q","pu","total"].includes(f))return;
   const box=e.target.closest(".act"),g=k=>box.querySelector(`[data-f="${k}"]`);
   const q=+g("q").value,pu=+g("pu").value,t=+g("total").value;
@@ -474,7 +565,7 @@ else{
         await setDoc(ref,{email:user.email,nom:(user.email||"").split("@")[0],role:"aucun"}).catch(e=>console.error(e));
         return;
       }
-      const r=snap.data().role||"aucun";
+      const r=snap.data().role||"aucun";myNom=snap.data().nom||"";
       if(r!==role||!ready){role=r;startData()}
       ready=true;refresh();
     },e=>{console.error(e);ready=true;refresh()});
