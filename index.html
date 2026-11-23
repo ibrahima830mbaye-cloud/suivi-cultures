@@ -105,7 +105,7 @@ const roleLabel=r=>(ROLES.find(x=>x[0]===r)||[0,"En attente"])[1];
 const KEY="suivi-cultures-v1";
 
 let app,auth,db,me=null,role="aucun",ready=false,pending=false;
-let cultures=[],acts=[],users=[],data=[],produits=[],commandes=[],myNom="",unsubs=[],unsubProfile=null;
+let cultures=[],acts=[],users=[],data=[],produits=[],commandes=[],myNom="",myTel="",authMode="login",registering=false,unsubs=[],unsubProfile=null;
 let S={culture:"",type:"",etape:""},cur=null;
 const canEdit=()=>role==="editeur"||role==="admin";
 const isAdmin=()=>role==="admin";
@@ -137,7 +137,7 @@ function rebuild(){
 }
 function refresh(){
   const ae=document.activeElement;
-  if(ae&&["INPUT","SELECT"].includes(ae.tagName)&&ae.closest(".act,#f,#fu,#fl,#fo,#fp")){pending=true;return}
+  if(ae&&["INPUT","SELECT"].includes(ae.tagName)&&ae.closest(".act,#f,#fu,#fl,#fr,#fo,#fp")){pending=true;return}
   render();
 }
 document.addEventListener("focusout",()=>{if(pending)setTimeout(()=>{if(pending)refresh()},250)});
@@ -286,7 +286,7 @@ cultures(){
 commander(){
   const ps=produits.filter(p=>p.actif!==false).sort((a,b)=>String(a.nom).localeCompare(String(b.nom)));
   return head("Commander","Choisissez les produits et les quantités, puis envoyez votre commande.")+(ps.length?
-  `<form id="fo"><div class="tw"><table><thead><tr><th>Produit</th><th class="n">Prix</th><th class="n">Disponible</th><th class="n">Quantité</th></tr></thead><tbody>${ps.map(p=>`<tr><td>${esc(p.nom)}</td><td class="n">${nb(p.prix)} FCFA / ${esc(p.unite)}</td><td class="n">${hasStock(p)?nb(p.stock)+" "+esc(p.unite):"—"}</td><td class="n"><input type="number" min="0" step="any" data-qty="${esc(p.id)}" style="width:110px" aria-label="Quantité de ${esc(p.nom)}"></td></tr>`).join("")}</tbody></table></div>
+  `<form id="fo"><div class="tw"><table><thead><tr><th>Produit</th><th class="n">Prix</th><th class="n">Disponibilité</th><th class="n">Quantité</th></tr></thead><tbody>${ps.map(p=>`<tr><td>${esc(p.nom)}</td><td class="n">${nb(p.prix)} FCFA / ${esc(p.unite)}</td><td class="n">${hasStock(p)&&+p.stock<=0?"Épuisé":hasStock(p)?nb(p.stock)+" "+esc(p.unite):"Disponible"}</td><td class="n">${hasStock(p)&&+p.stock<=0?"—":`<input type="number" min="0" step="any" data-qty="${esc(p.id)}" style="width:110px" aria-label="Quantité de ${esc(p.nom)}">`}</td></tr>`).join("")}</tbody></table></div>
    <div class="grid" style="margin-top:14px"><label style="grid-column:1/-1">Lieu, date de livraison souhaitée, remarques<input name="note" placeholder="Ex. : livraison à Thiès le samedi"></label><div><span class="meta">Total estimé</span><br><b id="ctot" style="font-size:1.3rem">0 FCFA</b></div><button>Envoyer la commande</button></div></form>`
   :'<p class="empty">Aucun produit n\'est disponible pour le moment.</p>');
 },
@@ -311,19 +311,19 @@ commandes(){
   return head("Commandes reçues","Changez le statut de chaque commande. La confirmation retire les quantités du stock ; l'annulation les remet.")+
   `<div class="bar"><select data-flt="statut" aria-label="Filtrer par statut"><option value="">Tous les statuts</option>${opts(f)}</select><button class="alt" data-go="print">Imprimer</button></div>`+
   `<div class="tw"><table><thead><tr><th>Date</th><th>Client</th><th>Détail</th><th class="n">Total (FCFA)</th><th>Statut</th></tr></thead><tbody>${
-   r.map(c=>`<tr><td>${fr(c.date)}</td><td>${esc(c.nom||c.email)}<br><span class="meta">${esc(c.email)}</span></td><td>${esc(detCmd(c))}${c.note?`<br><span class="meta">${esc(c.note)}</span>`:""}</td><td class="n">${nb(c.total)}</td><td><select data-ostat="${esc(c.id)}" aria-label="Statut de la commande">${opts(c.statut)}</select></td></tr>`).join("")||'<tr><td colspan="5" class="empty">Aucune commande.</td></tr>'
+   r.map(c=>`<tr><td>${fr(c.date)}</td><td>${esc(c.nom||c.email)}<br><span class="meta">${esc(c.email)}${c.tel?" · "+esc(c.tel):""}</span></td><td>${esc(detCmd(c))}${c.note?`<br><span class="meta">${esc(c.note)}</span>`:""}</td><td class="n">${nb(c.total)}</td><td><select data-ostat="${esc(c.id)}" aria-label="Statut de la commande">${opts(c.statut)}</select></td></tr>`).join("")||'<tr><td colspan="5" class="empty">Aucune commande.</td></tr>'
   }</tbody></table></div>`;
 },
 utilisateurs(){
-  return head("Utilisateurs","Créez des comptes et choisissez ce que chacun peut faire.")+
+  return head("Utilisateurs","Les clients s'inscrivent eux-mêmes depuis la page de connexion. Créez ici les comptes qui doivent tout voir (Lecteur) ou saisir (Éditeur).")+
   `<form id="fu" class="noprint"><div class="grid">
     <label>Nom<input name="nom" required></label>
     <label>Adresse e-mail<input name="email" type="email" required></label>
     <label>Mot de passe (6 caractères min.)<input name="password" type="text" minlength="6" required></label>
-    <label>Rôle<select name="role"><option value="editeur">Éditeur (peut saisir)</option><option value="lecteur">Lecteur (consultation seule)</option><option value="client">Client (peut seulement commander)</option><option value="admin">Administrateur</option></select></label>
+    <label>Rôle<select name="role"><option value="lecteur">Lecteur (voit tout sans saisir, peut commander)</option><option value="editeur">Éditeur (peut saisir)</option><option value="admin">Administrateur</option><option value="client">Client (commande seulement)</option></select></label>
     <button>Créer l'utilisateur</button></div></form>
-   <div class="tw"><table><thead><tr><th>Nom</th><th>E-mail</th><th>Rôle</th></tr></thead><tbody>${
-    users.map(u=>`<tr><td>${esc(u.nom)}</td><td>${esc(u.email)}</td><td><select data-urole="${esc(u.id)}" ${u.id===me.uid?"disabled":""} aria-label="Rôle de ${esc(u.email)}">${ROLES.map(([k,l])=>`<option value="${k}" ${k===u.role?"selected":""}>${l}</option>`).join("")}</select></td></tr>`).join("")||'<tr><td colspan="3" class="empty">Aucun utilisateur.</td></tr>'
+   <div class="tw"><table><thead><tr><th>Nom</th><th>E-mail</th><th>Téléphone</th><th>Rôle</th></tr></thead><tbody>${
+    users.map(u=>`<tr><td>${esc(u.nom)}</td><td>${esc(u.email)}</td><td>${esc(u.tel||"")}</td><td><select data-urole="${esc(u.id)}" ${u.id===me.uid?"disabled":""} aria-label="Rôle de ${esc(u.email)}">${ROLES.map(([k,l])=>`<option value="${k}" ${k===u.role?"selected":""}>${l}</option>`).join("")}</select></td></tr>`).join("")||'<tr><td colspan="4" class="empty">Aucun utilisateur.</td></tr>'
    }</tbody></table></div>
    <p class="sub" style="margin-top:12px">Un compte « Désactivé » ne voit plus aucune donnée. Pour supprimer définitivement un compte, utilisez la console Firebase (Authentication).</p>`;
 }};
@@ -346,12 +346,22 @@ function card(c){
   </section>`;
 }
 
-const loginHTML=()=>`<div class="login box"><h2>Connexion</h2><form id="fl" style="border:0;padding:0;margin:0"><div class="grid">
+const loginHTML=()=>authMode==="signup"?
+`<div class="login box"><h2>Créer un compte</h2><form id="fr" style="border:0;padding:0;margin:0"><div class="grid">
+  <label>Nom complet<input name="nom" required autocomplete="name"></label>
+  <label>Téléphone<input name="tel" type="tel" required autocomplete="tel" placeholder="Ex. : 77 000 00 00"></label>
+  <label>Adresse e-mail (votre identifiant)<input name="email" type="email" required autocomplete="username"></label>
+  <label>Mot de passe (6 caractères minimum)<input name="password" type="password" minlength="6" required autocomplete="new-password"></label>
+  <label>Confirmer le mot de passe<input name="password2" type="password" minlength="6" required autocomplete="new-password"></label>
+  <button>S'inscrire</button></div></form>
+  <p class="meta">Après l'inscription, vous pourrez voir les produits disponibles, passer commande et suivre l'état de vos commandes.</p>
+  <p><button class="lnk" data-go="login">J'ai déjà un compte : me connecter</button></p></div>`
+:`<div class="login box"><h2>Connexion</h2><form id="fl" style="border:0;padding:0;margin:0"><div class="grid">
   <label>Adresse e-mail<input name="email" type="email" required autocomplete="username"></label>
   <label>Mot de passe<input name="password" type="password" required autocomplete="current-password"></label>
   <button>Se connecter</button></div></form>
   <p><button class="lnk" data-go="reset">Mot de passe oublié ?</button></p>
-  <p class="meta">Les comptes sont créés par l'administrateur.</p></div>`;
+  <p class="meta">Pas encore de compte ? <button class="lnk" data-go="signup">Créer un compte</button></p></div>`;
 
 function side(){
   $("#who").innerHTML=me?`${esc(me.email)}<br>${esc(roleLabel(hasAccess()?role:"aucun"))}`:"";
@@ -382,19 +392,29 @@ window.addEventListener("hashchange",render);
 
 /* ---------- actions ---------- */
 document.addEventListener("submit",async e=>{
-  const id=e.target.id;if(!["f","fu","fl","fo","fp"].includes(id))return;
+  const id=e.target.id;if(!["f","fu","fl","fr","fo","fp"].includes(id))return;
   e.preventDefault();
   const v=Object.fromEntries(new FormData(e.target));
   if(id==="fl"){
     try{await signInWithEmailAndPassword(auth,v.email.trim(),v.password);location.hash="#tableau"}
     catch(x){alert("Adresse e-mail ou mot de passe incorrect.")}
+  }else if(id==="fr"){
+    if(v.password!==v.password2){alert("Les deux mots de passe ne sont pas identiques.");return}
+    registering=true;
+    try{
+      const cred=await createUserWithEmailAndPassword(auth,v.email.trim(),v.password);
+      await setDoc(doc(db,"users",cred.user.uid),{email:cred.user.email,nom:v.nom.trim(),tel:v.tel.trim(),role:"client"});
+      location.hash="#commander";
+    }catch(x){
+      alert(x.code==="auth/email-already-in-use"?"Cette adresse e-mail a déjà un compte. Connectez-vous.":x.code==="auth/weak-password"?"Mot de passe trop court (6 caractères minimum).":x.code==="auth/invalid-email"?"Adresse e-mail invalide.":"Inscription impossible ("+(x.code||x.message)+").");
+    }finally{registering=false}
   }else if(id==="fo"){
     const lignes=[...document.querySelectorAll("[data-qty]")].map(i=>({p:produits.find(x=>x.id===i.dataset.qty),q:+i.value})).filter(x=>x.q>0&&x.p);
     if(!lignes.length){alert("Indiquez au moins une quantité.");return}
     const bad=lignes.find(x=>hasStock(x.p)&&x.q>+x.p.stock);
     if(bad){alert(`La quantité demandée dépasse le stock disponible pour ${bad.p.nom} (${nb(bad.p.stock)} ${bad.p.unite}).`);return}
     const total=lignes.reduce((t,x)=>t+x.q*(+x.p.prix||0),0);
-    const ok=await run(()=>addDoc(collection(db,"commandes"),{uid:me.uid,email:me.email,nom:myNom,date:today(),
+    const ok=await run(()=>addDoc(collection(db,"commandes"),{uid:me.uid,email:me.email,nom:myNom,tel:myTel,date:today(),
       lignes:lignes.map(x=>({produitId:x.p.id,nom:x.p.nom,unite:x.p.unite,prix:+x.p.prix||0,qte:x.q})),total,statut:"en_attente",note:(v.note||"").trim(),created:Date.now()}));
     if(ok){alert("Commande envoyée. Elle sera confirmée par l'exploitation.");location.hash="#mescommandes";render()}
   }else if(id==="fp"&&canEdit()){
@@ -423,6 +443,7 @@ document.addEventListener("submit",async e=>{
 
 document.addEventListener("click",async e=>{
   const b=e.target.closest("button");if(!b)return;
+  if(b.dataset.go==="signup"||b.dataset.go==="login"){authMode=b.dataset.go;render();return}
   if(b.dataset.go==="print"){window.print();return}
   if(b.dataset.go==="csv"){
     const q=x=>`"${String(x??"").replace(/"/g,'""')}"`;
@@ -557,15 +578,15 @@ else{
   onAuthStateChanged(auth,user=>{
     if(unsubProfile){unsubProfile();unsubProfile=null}
     stopData();me=user;role="aucun";
-    if(!user){ready=true;render();return}
+    if(!user){authMode="login";ready=true;render();return}
     ready=false;render();
     const ref=doc(db,"users",user.uid);
     unsubProfile=onSnapshot(ref,async snap=>{
-      if(!snap.exists()){
+      if(!snap.exists()){if(registering)return;
         await setDoc(ref,{email:user.email,nom:(user.email||"").split("@")[0],role:"aucun"}).catch(e=>console.error(e));
         return;
       }
-      const r=snap.data().role||"aucun";myNom=snap.data().nom||"";
+      const r=snap.data().role||"aucun";myNom=snap.data().nom||"";myTel=snap.data().tel||"";
       if(r!==role||!ready){role=r;startData()}
       ready=true;refresh();
     },e=>{console.error(e);ready=true;refresh()});
