@@ -64,6 +64,11 @@ summary{cursor:pointer;font:600 .92rem system-ui,sans-serif}
 .act{margin-top:10px}
 .hid{display:none}
 .empty{text-align:center;color:var(--mute);padding:30px 10px}
+.guide{background:var(--card);border:1px solid var(--line);border-left:5px solid var(--sun);border-radius:6px;padding:16px 18px;margin-bottom:16px;font-family:system-ui,sans-serif;font-size:.95rem}
+.guide h3{margin:0 0 6px;font:700 1.15rem Georgia,serif}
+.guide ol{margin:8px 0 12px;padding-left:22px}
+.guide li{margin:7px 0}
+.legend{font:.85rem system-ui,sans-serif;color:var(--mute);margin:0 0 14px}
 .login{max-width:380px;margin:50px auto}
 .login h2{margin-top:0}
 .login .grid{grid-template-columns:1fr}
@@ -79,6 +84,7 @@ summary{cursor:pointer;font:600 .92rem system-ui,sans-serif}
     <nav id="nav" aria-label="Navigation"></nav>
     <div class="side-b">
       <div class="who" id="who"></div>
+      <button class="alt" id="help" hidden>Comment commander ?</button>
       <button class="alt" id="exp">Sauvegarde (JSON)</button>
       <button class="alt" id="imp">Restaurer</button>
       <input type="file" id="file" accept="application/json" hidden>
@@ -90,7 +96,7 @@ summary{cursor:pointer;font:600 .92rem system-ui,sans-serif}
 
 <script type="module">
 import {initializeApp,deleteApp} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
-import {getAuth,onAuthStateChanged,signInWithEmailAndPassword,signOut,createUserWithEmailAndPassword,sendPasswordResetEmail} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
+import {getAuth,initializeAuth,browserSessionPersistence,onAuthStateChanged,signInWithEmailAndPassword,signOut,createUserWithEmailAndPassword,sendPasswordResetEmail} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
 import {getFirestore,collection,doc,onSnapshot,addDoc,setDoc,updateDoc,deleteDoc,writeBatch,query,where,increment} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
 
 /* ====== À REMPLIR : Firebase > Paramètres du projet > Vos applications > Configuration ====== */
@@ -116,6 +122,20 @@ const STAT={en_attente:"En attente",confirmee:"Confirmée",livree:"Livrée",annu
 const hasStock=p=>p.stock!==""&&p.stock!=null&&!isNaN(+p.stock);
 const detCmd=c=>(c.lignes||[]).map(l=>`${nb(l.qte)} ${l.unite} ${l.nom}`).join(", ");
 const consomme=st=>st==="confirmee"||st==="livree";
+const guideKey=()=>"guide-commande-"+(me?me.uid:"");
+const guideVu=()=>{try{return localStorage.getItem(guideKey())==="1"}catch(e){return false}};
+const guideShow=()=>S.guide===true||(S.guide===undefined&&!guideVu());
+const guideBox=()=>`<section class="guide noprint" aria-label="Guide">
+  <h3>Bienvenue${myNom?", "+esc(myNom.split(" ")[0]):""} ! Comment passer commande</h3>
+  <ol>
+    <li><b>Choisissez vos produits.</b> Dans la liste ci-dessous, repérez les produits disponibles avec leur prix et la quantité encore en stock.</li>
+    <li><b>Indiquez les quantités.</b> Saisissez la quantité voulue en face de chaque produit : le total se calcule tout seul. Laissez vide les produits que vous ne voulez pas.</li>
+    <li><b>Précisez la livraison.</b> Écrivez le lieu et la date souhaités, puis cliquez sur « Envoyer la commande ».</li>
+    <li><b>Suivez votre commande.</b> Ouvrez « Mes commandes » dans le menu : vous y voyez l'état de chaque commande. Tant qu'elle est « En attente », vous pouvez l'annuler.</li>
+  </ol>
+  <p class="meta">Vous ne voyez que vos propres commandes. Vous pourrez relire ce guide à tout moment avec le bouton « Comment commander ? » du menu.</p>
+  <button data-go="guideok">J'ai compris</button>
+</section>`;
 
 const $=s=>document.querySelector(s);
 const today=()=>new Date().toISOString().slice(0,10);
@@ -285,14 +305,14 @@ cultures(){
 },
 commander(){
   const ps=produits.filter(p=>p.actif!==false).sort((a,b)=>String(a.nom).localeCompare(String(b.nom)));
-  return head("Commander","Choisissez les produits et les quantités, puis envoyez votre commande.")+(ps.length?
+  return head("Commander","Choisissez les produits et les quantités, puis envoyez votre commande.")+(guideShow()&&!canEdit()?guideBox():"")+(ps.length?
   `<form id="fo"><div class="tw"><table><thead><tr><th>Produit</th><th class="n">Prix</th><th class="n">Disponibilité</th><th class="n">Quantité</th></tr></thead><tbody>${ps.map(p=>`<tr><td>${esc(p.nom)}</td><td class="n">${nb(p.prix)} FCFA / ${esc(p.unite)}</td><td class="n">${hasStock(p)&&+p.stock<=0?"Épuisé":hasStock(p)?nb(p.stock)+" "+esc(p.unite):"Disponible"}</td><td class="n">${hasStock(p)&&+p.stock<=0?"—":`<input type="number" min="0" step="any" data-qty="${esc(p.id)}" style="width:110px" aria-label="Quantité de ${esc(p.nom)}">`}</td></tr>`).join("")}</tbody></table></div>
    <div class="grid" style="margin-top:14px"><label style="grid-column:1/-1">Lieu, date de livraison souhaitée, remarques<input name="note" placeholder="Ex. : livraison à Thiès le samedi"></label><div><span class="meta">Total estimé</span><br><b id="ctot" style="font-size:1.3rem">0 FCFA</b></div><button>Envoyer la commande</button></div></form>`
   :'<p class="empty">Aucun produit n\'est disponible pour le moment.</p>');
 },
 mescommandes(){
   const r=commandes.filter(c=>c.uid===me.uid).sort((a,b)=>(b.created||0)-(a.created||0));
-  return head("Mes commandes","Suivez l'état de vos commandes.")+`<div class="tw"><table><thead><tr><th>Date</th><th>Détail</th><th class="n">Total (FCFA)</th><th>Statut</th><th></th></tr></thead><tbody>${
+  return head("Mes commandes","Suivez l'état de vos commandes.")+`<p class="legend"><b>En attente</b> : commande reçue, pas encore traitée · <b>Confirmée</b> : acceptée par l'exploitation · <b>Livrée</b> : remise · <b>Annulée</b> : annulée.</p>`+`<div class="tw"><table><thead><tr><th>Date</th><th>Détail</th><th class="n">Total (FCFA)</th><th>Statut</th><th></th></tr></thead><tbody>${
    r.map(c=>`<tr><td>${fr(c.date)}</td><td>${esc(detCmd(c))}${c.note?`<br><span class="meta">${esc(c.note)}</span>`:""}</td><td class="n">${nb(c.total)}</td><td>${esc(STAT[c.statut]||c.statut)}</td><td>${c.statut==="en_attente"?`<button class="alt" data-act="cancelc" data-oid="${esc(c.id)}">Annuler</button>`:""}</td></tr>`).join("")||'<tr><td colspan="5" class="empty">Aucune commande pour le moment.</td></tr>'
   }</tbody></table></div>`;
 },
@@ -367,6 +387,7 @@ function side(){
   $("#who").innerHTML=me?`${esc(me.email)}<br>${esc(roleLabel(hasAccess()?role:"aucun"))}`:"";
   $("#out").hidden=!me;
   $("#exp").hidden=!canSee();
+  $("#help").hidden=!(me&&hasAccess()&&!canEdit());
   $("#imp").hidden=!canEdit();
 }
 function render(){
@@ -416,7 +437,7 @@ document.addEventListener("submit",async e=>{
     const total=lignes.reduce((t,x)=>t+x.q*(+x.p.prix||0),0);
     const ok=await run(()=>addDoc(collection(db,"commandes"),{uid:me.uid,email:me.email,nom:myNom,tel:myTel,date:today(),
       lignes:lignes.map(x=>({produitId:x.p.id,nom:x.p.nom,unite:x.p.unite,prix:+x.p.prix||0,qte:x.q})),total,statut:"en_attente",note:(v.note||"").trim(),created:Date.now()}));
-    if(ok){alert("Commande envoyée. Elle sera confirmée par l'exploitation.");location.hash="#mescommandes";render()}
+    if(ok){alert("Commande envoyée ! Vous pouvez suivre son état dans « Mes commandes ».");location.hash="#mescommandes";render()}
   }else if(id==="fp"&&canEdit()){
     const ok=await run(()=>addDoc(collection(db,"produits"),{nom:v.nom.trim(),unite:v.unite,prix:+v.prix||0,stock:v.stock===""?"":+v.stock,actif:true,created:Date.now()}));
     if(ok)render();
@@ -443,6 +464,10 @@ document.addEventListener("submit",async e=>{
 
 document.addEventListener("click",async e=>{
   const b=e.target.closest("button");if(!b)return;
+  if(b.dataset.go==="guideok"){
+    S.guide=false;try{localStorage.setItem(guideKey(),"1")}catch(x){}
+    render();return;
+  }
   if(b.dataset.go==="signup"||b.dataset.go==="login"){authMode=b.dataset.go;render();return}
   if(b.dataset.go==="print"){window.print();return}
   if(b.dataset.go==="csv"){
@@ -569,15 +594,17 @@ $("#file").onchange=e=>{
   if(e.target.files[0])r.readAsText(e.target.files[0]);e.target.value="";
 };
 $("#out").onclick=()=>signOut(auth);
+$("#help").onclick=()=>{S.guide=true;if(location.hash!=="#commander")location.hash="#commander";render()};
 
 /* ---------- démarrage ---------- */
 if(!configured){render()}
 else{
-  app=initializeApp(FIREBASE);auth=getAuth(app);db=getFirestore(app);
+  // la session ne dépasse pas la fermeture de l'onglet : chaque nouvelle visite commence par la connexion
+  app=initializeApp(FIREBASE);auth=initializeAuth(app,{persistence:browserSessionPersistence});db=getFirestore(app);
   render();
   onAuthStateChanged(auth,user=>{
     if(unsubProfile){unsubProfile();unsubProfile=null}
-    stopData();me=user;role="aucun";
+    stopData();S.guide=undefined;me=user;role="aucun";
     if(!user){authMode="login";ready=true;render();return}
     ready=false;render();
     const ref=doc(db,"users",user.uid);
